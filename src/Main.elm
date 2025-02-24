@@ -11,12 +11,14 @@ import Direction2d exposing (Direction2d)
 import Duration exposing (Duration)
 import Html exposing (Html)
 import Html.Attributes
+import Html.Events
 import Json.Encode
 import Length exposing (Length)
 import Point2d exposing (Point2d)
 import Quantity exposing (Quantity)
 import Svg exposing (Svg)
 import Svg.Attributes
+import Svg.Events
 import Time
 import Vector2d exposing (Vector2d)
 
@@ -34,6 +36,7 @@ main =
 type alias State =
     { lastSimulationTime : Maybe Time.Posix
     , body : Body
+    , draggedBodyPointIndex : Maybe Int
     }
 
 
@@ -63,6 +66,7 @@ type BodyPointMovement
 initialState : State
 initialState =
     { lastSimulationTime = Nothing
+    , draggedBodyPointIndex = Nothing
     , body =
         { bones =
             [ { startIndex = 0
@@ -162,9 +166,10 @@ subscribe state =
 
                         Just previousSimulationTime ->
                             Duration.from previousSimulationTime currentTime
-
-                bodyWithGravity : Body
-                bodyWithGravity =
+            in
+            { state
+                | lastSimulationTime = Just currentTime
+                , body =
                     state.body
                         |> bodyVelocityAlter
                             (\velocity ->
@@ -174,124 +179,7 @@ subscribe state =
                                             |> Vector2d.for sincePreviousSimulation
                                         )
                             )
-
-                bodyWithForcesFromBonesApplies : Body
-                bodyWithForcesFromBonesApplies =
-                    { bodyWithGravity
-                        | points =
-                            bodyWithGravity.bones
-                                |> List.foldl
-                                    (\bone bodyPointsSoFar ->
-                                        case
-                                            ( bodyPointsSoFar |> Array.get bone.startIndex
-                                            , bodyPointsSoFar |> Array.get bone.endIndex
-                                            )
-                                        of
-                                            ( Just startPoint, Just endPoint ) ->
-                                                let
-                                                    startToEndVector : Vector2d Length.Meters Never
-                                                    startToEndVector =
-                                                        Vector2d.from startPoint.position endPoint.position
-
-                                                    startToEndDirection : Direction2d Never
-                                                    startToEndDirection =
-                                                        startToEndVector
-                                                            |> Vector2d.direction
-                                                            |> Maybe.withDefault Direction2d.positiveY
-
-                                                    actualDistance : Length
-                                                    actualDistance =
-                                                        startToEndVector
-                                                            |> Vector2d.length
-
-                                                    lengthDifferenceToBalance : Length
-                                                    lengthDifferenceToBalance =
-                                                        actualDistance
-                                                            |> Quantity.minus bone.length
-                                                in
-                                                case ( startPoint.movement, endPoint.movement ) of
-                                                    ( BodyPointFixed, BodyPointFixed ) ->
-                                                        bodyPointsSoFar
-
-                                                    ( BodyPointFree startMovementFree, BodyPointFixed ) ->
-                                                        bodyPointsSoFar
-                                                            |> Array.set bone.startIndex
-                                                                { startPoint
-                                                                    | movement =
-                                                                        BodyPointFree
-                                                                            { velocity =
-                                                                                startMovementFree.velocity
-                                                                                    |> Vector2d.plus
-                                                                                        (Vector2d.withLength
-                                                                                            lengthDifferenceToBalance
-                                                                                            startToEndDirection
-                                                                                            |> Vector2d.per boneLooseness
-                                                                                        )
-                                                                            }
-                                                                }
-
-                                                    ( BodyPointFixed, BodyPointFree endMovementFree ) ->
-                                                        bodyPointsSoFar
-                                                            |> Array.set bone.endIndex
-                                                                { endPoint
-                                                                    | movement =
-                                                                        BodyPointFree
-                                                                            { velocity =
-                                                                                endMovementFree.velocity
-                                                                                    |> Vector2d.plus
-                                                                                        (Vector2d.withLength
-                                                                                            lengthDifferenceToBalance
-                                                                                            (startToEndDirection
-                                                                                                |> Direction2d.reverse
-                                                                                            )
-                                                                                            |> Vector2d.per boneLooseness
-                                                                                        )
-                                                                            }
-                                                                }
-
-                                                    ( BodyPointFree startMovementFree, BodyPointFree endMovementFree ) ->
-                                                        bodyPointsSoFar
-                                                            |> Array.set bone.startIndex
-                                                                { startPoint
-                                                                    | movement =
-                                                                        BodyPointFree
-                                                                            { velocity =
-                                                                                startMovementFree.velocity
-                                                                                    |> Vector2d.plus
-                                                                                        (Vector2d.withLength
-                                                                                            lengthDifferenceToBalance
-                                                                                            startToEndDirection
-                                                                                            |> Vector2d.per boneLooseness
-                                                                                        )
-                                                                            }
-                                                                }
-                                                            |> Array.set bone.endIndex
-                                                                { endPoint
-                                                                    | movement =
-                                                                        BodyPointFree
-                                                                            { velocity =
-                                                                                endMovementFree.velocity
-                                                                                    |> Vector2d.plus
-                                                                                        (Vector2d.withLength
-                                                                                            lengthDifferenceToBalance
-                                                                                            (startToEndDirection
-                                                                                                |> Direction2d.reverse
-                                                                                            )
-                                                                                            |> Vector2d.per boneLooseness
-                                                                                        )
-                                                                            }
-                                                                }
-
-                                            _ ->
-                                                bodyPointsSoFar
-                                    )
-                                    bodyWithGravity.points
-                    }
-            in
-            { state
-                | lastSimulationTime = Just currentTime
-                , body =
-                    bodyWithForcesFromBonesApplies
+                        |> bodyApplyForcesFromBones
                         |> bodyVelocityAlter
                             (\velocity ->
                                 velocity
@@ -305,6 +193,120 @@ subscribe state =
                         |> bodyUpdatePointPositions sincePreviousSimulation
             }
         )
+
+
+bodyApplyForcesFromBones : Body -> Body
+bodyApplyForcesFromBones body =
+    { body
+        | points =
+            body.bones
+                |> List.foldl
+                    (\bone bodyPointsSoFar ->
+                        case
+                            ( bodyPointsSoFar |> Array.get bone.startIndex
+                            , bodyPointsSoFar |> Array.get bone.endIndex
+                            )
+                        of
+                            ( Just startPoint, Just endPoint ) ->
+                                let
+                                    startToEndVector : Vector2d Length.Meters Never
+                                    startToEndVector =
+                                        Vector2d.from startPoint.position endPoint.position
+
+                                    startToEndDirection : Direction2d Never
+                                    startToEndDirection =
+                                        startToEndVector
+                                            |> Vector2d.direction
+                                            |> Maybe.withDefault Direction2d.positiveY
+
+                                    actualDistance : Length
+                                    actualDistance =
+                                        startToEndVector
+                                            |> Vector2d.length
+
+                                    lengthDifferenceToBalance : Length
+                                    lengthDifferenceToBalance =
+                                        actualDistance
+                                            |> Quantity.minus bone.length
+                                in
+                                case ( startPoint.movement, endPoint.movement ) of
+                                    ( BodyPointFixed, BodyPointFixed ) ->
+                                        bodyPointsSoFar
+
+                                    ( BodyPointFree startMovementFree, BodyPointFixed ) ->
+                                        bodyPointsSoFar
+                                            |> Array.set bone.startIndex
+                                                { startPoint
+                                                    | movement =
+                                                        BodyPointFree
+                                                            { velocity =
+                                                                startMovementFree.velocity
+                                                                    |> Vector2d.plus
+                                                                        (Vector2d.withLength
+                                                                            lengthDifferenceToBalance
+                                                                            startToEndDirection
+                                                                            |> Vector2d.per boneLooseness
+                                                                        )
+                                                            }
+                                                }
+
+                                    ( BodyPointFixed, BodyPointFree endMovementFree ) ->
+                                        bodyPointsSoFar
+                                            |> Array.set bone.endIndex
+                                                { endPoint
+                                                    | movement =
+                                                        BodyPointFree
+                                                            { velocity =
+                                                                endMovementFree.velocity
+                                                                    |> Vector2d.plus
+                                                                        (Vector2d.withLength
+                                                                            lengthDifferenceToBalance
+                                                                            (startToEndDirection
+                                                                                |> Direction2d.reverse
+                                                                            )
+                                                                            |> Vector2d.per boneLooseness
+                                                                        )
+                                                            }
+                                                }
+
+                                    ( BodyPointFree startMovementFree, BodyPointFree endMovementFree ) ->
+                                        bodyPointsSoFar
+                                            |> Array.set bone.startIndex
+                                                { startPoint
+                                                    | movement =
+                                                        BodyPointFree
+                                                            { velocity =
+                                                                startMovementFree.velocity
+                                                                    |> Vector2d.plus
+                                                                        (Vector2d.withLength
+                                                                            lengthDifferenceToBalance
+                                                                            startToEndDirection
+                                                                            |> Vector2d.per boneLooseness
+                                                                        )
+                                                            }
+                                                }
+                                            |> Array.set bone.endIndex
+                                                { endPoint
+                                                    | movement =
+                                                        BodyPointFree
+                                                            { velocity =
+                                                                endMovementFree.velocity
+                                                                    |> Vector2d.plus
+                                                                        (Vector2d.withLength
+                                                                            lengthDifferenceToBalance
+                                                                            (startToEndDirection
+                                                                                |> Direction2d.reverse
+                                                                            )
+                                                                            |> Vector2d.per boneLooseness
+                                                                        )
+                                                            }
+                                                }
+
+                            _ ->
+                                bodyPointsSoFar
+                    )
+                    body.points
+    }
 
 
 velocityLossScalePerSecond : Float
@@ -384,6 +386,8 @@ view state =
         , Html.Attributes.style "background" "black"
         , Html.Attributes.style "color" "white"
         , Html.Attributes.style "margin" "0px"
+        , Html.Events.onMouseUp
+            { state | draggedBodyPointIndex = Nothing }
         ]
         [ Svg.svg
             [ Svg.Attributes.viewBox "0 0 1.6 0.9"
@@ -409,6 +413,29 @@ view state =
 
                             _ ->
                                 Html.text "invalid point index"
+                    )
+                |> Svg.g []
+            , state.body.points
+                |> Array.toList
+                |> List.indexedMap
+                    (\pointIndex point ->
+                        svgCircle
+                            { position = point.position |> Point2d.toMeters
+                            , radius = 0.02
+                            }
+                            ([ Svg.Events.onMouseDown
+                                { state | draggedBodyPointIndex = Just pointIndex }
+                             ]
+                                ++ (if state.draggedBodyPointIndex == Just pointIndex then
+                                        [ svgFillUniform (Color.rgb 0 0.33 0.23)
+                                        , svgStrokeWidth 0.005
+                                        , svgStrokeUniform (Color.rgb 0.4 0.55 0.55)
+                                        ]
+
+                                    else
+                                        [ svgFillUniform (Color.rgb 0 0 0) ]
+                                   )
+                            )
                     )
                 |> Svg.g []
             ]
