@@ -196,8 +196,12 @@ type Event
     = WindowSized { width : Float, height : Float }
     | SimulationTickPassed Time.Posix
     | MousePressedOnBackground { x : Float, y : Float }
-    | MousePressedPrimaryOnBodyPoint { id : Int }
-    | MousePressedSecondaryOnBodyPoint
+    | MousePressedLeftOnBodyPoint
+        { id : Int
+        , position : { x : Float, y : Float }
+        }
+    | MousePressedMiddleOnBodyPoint { id : Int }
+    | MousePressedRightOnBodyPoint
         { id : Int
         , position : { x : Float, y : Float }
         }
@@ -239,13 +243,7 @@ updateStateBasedOnEvent event state =
                         )
             }
 
-        MousePressedPrimaryOnBodyPoint pressed ->
-            { state
-                | dragging =
-                    Just (DraggingBodyPoint { id = pressed.id })
-            }
-
-        MousePressedSecondaryOnBodyPoint pressed ->
+        MousePressedLeftOnBodyPoint pressed ->
             { state
                 | dragging =
                     Just
@@ -254,6 +252,33 @@ updateStateBasedOnEvent event state =
                             , end = pressed.position
                             }
                         )
+            }
+
+        MousePressedMiddleOnBodyPoint pressed ->
+            { state
+                | body =
+                    state.body
+                        |> (\body ->
+                                -- can split the body in multiple connected bodies
+                                { body
+                                    | points =
+                                        body.points
+                                            |> FastDict.remove pressed.id
+                                    , bones =
+                                        body.bones
+                                            |> List.filter
+                                                (\bone ->
+                                                    (bone.endPointId /= pressed.id)
+                                                        && (bone.startPointId /= pressed.id)
+                                                )
+                                }
+                           )
+            }
+
+        MousePressedRightOnBodyPoint pressed ->
+            { state
+                | dragging =
+                    Just (DraggingBodyPoint { id = pressed.id })
             }
 
         MouseDoubleClickedOnBodyPoint doubleClickedBodyPoint ->
@@ -895,24 +920,40 @@ view state =
                                             Nothing ->
                                                 [ Svg.Events.stopPropagationOn "mousedown"
                                                     (Json.Decode.andThen
-                                                        (\button ->
-                                                            case button of
+                                                        (\event ->
+                                                            case event.button of
                                                                 0 ->
                                                                     Json.Decode.succeed
-                                                                        ( MousePressedPrimaryOnBodyPoint { id = pointId }
+                                                                        ( MousePressedLeftOnBodyPoint
+                                                                            { id = pointId
+                                                                            , position =
+                                                                                { x = event.x / 1000
+                                                                                , y = event.y / 1000
+                                                                                }
+                                                                            }
+                                                                        , True
+                                                                        )
+
+                                                                1 ->
+                                                                    Json.Decode.succeed
+                                                                        ( MousePressedMiddleOnBodyPoint { id = pointId }
                                                                         , True
                                                                         )
 
                                                                 _ ->
                                                                     Json.Decode.fail "this mouse button is not handled by onmousedown"
                                                         )
-                                                        (Json.Decode.field "button" Json.Decode.int)
+                                                        (Json.Decode.map3 (\button x y -> { button = button, x = x, y = y })
+                                                            (Json.Decode.field "button" Json.Decode.int)
+                                                            (Json.Decode.field "clientX" Json.Decode.float)
+                                                            (Json.Decode.field "clientY" Json.Decode.float)
+                                                        )
                                                     )
                                                 , Svg.Events.custom "contextmenu"
                                                     (Json.Decode.map2
                                                         (\x y ->
                                                             { message =
-                                                                MousePressedSecondaryOnBodyPoint
+                                                                MousePressedRightOnBodyPoint
                                                                     { id = pointId
                                                                     , position = { x = x / 1000, y = y / 1000 }
                                                                     }
