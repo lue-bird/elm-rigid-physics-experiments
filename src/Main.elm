@@ -54,8 +54,16 @@ type alias State =
     , windowHeight : Float
     , lastSimulationTime : Maybe Time.Posix
     , body : Body
-    , draggedBodyPointId : Maybe Int
+    , dragging : Maybe DragState
     }
+
+
+type DragState
+    = DraggingBodyPoint { id : Int }
+    | DraggingFromNewPointPosition
+        { start : { x : Float, y : Float }
+        , end : { x : Float, y : Float }
+        }
 
 
 type alias Body =
@@ -87,7 +95,7 @@ initialState =
     { windowHeight = 1000
     , windowWidth = 2000
     , lastSimulationTime = Nothing
-    , draggedBodyPointId = Nothing
+    , dragging = Nothing
     , body =
         { bones =
             [ { startPointId = 0
@@ -182,14 +190,20 @@ initialState =
 
 type Event
     = WindowSized { width : Float, height : Float }
-    | MouseReleased
     | SimulationTickPassed Time.Posix
+    | MouseReleasedOnBackground
+    | MouseReleasedOnBodyPointAfterDraggingFromNewPointPosition
+        { startPosition : { x : Float, y : Float }
+        , endPosition : { x : Float, y : Float }
+        , endBodyPointId : Int
+        }
     | MouseMoved
         { x : Float
         , y : Float
-        , draggedBodyPointId : Int
+        , dragging : DragState
         }
-    | MousePressed { draggedBodyPointId : Int }
+    | MousePressedOnBackground { x : Float, y : Float }
+    | MousePressedOnBodyPoint { id : Int }
 
 
 updateStateBasedOnEvent : Event -> State -> State
@@ -201,33 +215,114 @@ updateStateBasedOnEvent event state =
                 , windowHeight = newWindowSize.height
             }
 
-        MouseReleased ->
-            { state | draggedBodyPointId = Nothing }
-
-        MouseMoved moved ->
+        MousePressedOnBackground position ->
             { state
-                | body =
+                | dragging =
+                    Just
+                        (DraggingFromNewPointPosition
+                            { start = position
+                            , end = position
+                            }
+                        )
+            }
+
+        MousePressedOnBodyPoint pressed ->
+            { state
+                | dragging =
+                    Just (DraggingBodyPoint { id = pressed.id })
+            }
+
+        MouseReleasedOnBackground ->
+            { state | dragging = Nothing }
+
+        MouseReleasedOnBodyPointAfterDraggingFromNewPointPosition mouseReleasedOnBodyPointAfterDraggingFromNewPointPosition ->
+            let
+                newPointId : Int
+                newPointId =
+                    case state.body.points |> FastDict.getMaxKey of
+                        Nothing ->
+                            0
+
+                        Just maxId ->
+                            maxId + 1
+            in
+            { state
+                | dragging = Nothing
+                , body =
                     state.body
                         |> (\body ->
                                 { body
                                     | points =
                                         body.points
-                                            |> FastDict.update
-                                                moved.draggedBodyPointId
-                                                (Maybe.map
-                                                    (\draggedPoint ->
-                                                        { draggedPoint
-                                                            | position =
-                                                                Point2d.fromMeters
-                                                                    { x = moved.x / 1000
-                                                                    , y = moved.y / 1000
-                                                                    }
+                                            |> FastDict.insert
+                                                newPointId
+                                                { position = Point2d.fromMeters mouseReleasedOnBodyPointAfterDraggingFromNewPointPosition.startPosition
+                                                , movement =
+                                                    BodyPointFree
+                                                        { velocity =
+                                                            Vector2d.meters 0 0
+                                                                |> Vector2d.per Duration.second
                                                         }
-                                                    )
+                                                }
+                                    , bones =
+                                        { startPointId = newPointId
+                                        , endPointId = mouseReleasedOnBodyPointAfterDraggingFromNewPointPosition.endBodyPointId
+                                        , length =
+                                            Vector2d.from (Point2d.fromMeters mouseReleasedOnBodyPointAfterDraggingFromNewPointPosition.startPosition)
+                                                (case
+                                                    body.points
+                                                        |> FastDict.get mouseReleasedOnBodyPointAfterDraggingFromNewPointPosition.endBodyPointId
+                                                 of
+                                                    Just endPoint ->
+                                                        endPoint.position
+
+                                                    Nothing ->
+                                                        Point2d.fromMeters mouseReleasedOnBodyPointAfterDraggingFromNewPointPosition.endPosition
                                                 )
+                                                |> Vector2d.length
+                                        }
+                                            :: body.bones
                                 }
                            )
             }
+
+        MouseMoved moved ->
+            case moved.dragging of
+                DraggingFromNewPointPosition positions ->
+                    { state
+                        | dragging =
+                            Just
+                                (DraggingFromNewPointPosition
+                                    { positions
+                                        | end = { x = moved.x, y = moved.y }
+                                    }
+                                )
+                    }
+
+                DraggingBodyPoint draggingBodyPoint ->
+                    { state
+                        | body =
+                            state.body
+                                |> (\body ->
+                                        { body
+                                            | points =
+                                                body.points
+                                                    |> FastDict.update
+                                                        draggingBodyPoint.id
+                                                        (Maybe.map
+                                                            (\draggedPoint ->
+                                                                { draggedPoint
+                                                                    | position =
+                                                                        Point2d.fromMeters
+                                                                            { x = moved.x
+                                                                            , y = moved.y
+                                                                            }
+                                                                }
+                                                            )
+                                                        )
+                                        }
+                                   )
+                    }
 
         SimulationTickPassed currentTime ->
             let
@@ -239,6 +334,45 @@ updateStateBasedOnEvent event state =
 
                         Just previousSimulationTime ->
                             Duration.from previousSimulationTime currentTime
+
+                bodyUpdatePointPositions : Body -> Body
+                bodyUpdatePointPositions body =
+                    { body
+                        | points =
+                            body.points
+                                |> FastDict.map
+                                    (\bodyPointId point ->
+                                        case point.movement of
+                                            BodyPointFixed ->
+                                                point
+
+                                            BodyPointFree pointMovementFree ->
+                                                let
+                                                    bodyPointIsCurrentlyBeingDragged =
+                                                        case state.dragging of
+                                                            Nothing ->
+                                                                False
+
+                                                            Just (DraggingFromNewPointPosition _) ->
+                                                                False
+
+                                                            Just (DraggingBodyPoint draggingBodyPoint) ->
+                                                                bodyPointId == draggingBodyPoint.id
+                                                in
+                                                if bodyPointIsCurrentlyBeingDragged then
+                                                    point
+
+                                                else
+                                                    { point
+                                                        | position =
+                                                            point.position
+                                                                |> Point2d.translateBy
+                                                                    (pointMovementFree.velocity
+                                                                        |> Vector2d.for sincePreviousSimulation
+                                                                    )
+                                                    }
+                                    )
+                    }
             in
             { state
                 | lastSimulationTime = Just currentTime
@@ -263,12 +397,7 @@ updateStateBasedOnEvent event state =
                                               )
                                         )
                             )
-                        |> bodyUpdatePointPositions sincePreviousSimulation
-            }
-
-        MousePressed pressed ->
-            { state
-                | draggedBodyPointId = Just pressed.draggedBodyPointId
+                        |> bodyUpdatePointPositions
             }
 
 
@@ -283,8 +412,19 @@ subscribe state =
                     }
             )
         , Browser.Events.onMouseUp
-            (Json.Decode.map (\() -> MouseReleased)
+            (Json.Decode.map (\() -> MouseReleasedOnBackground)
                 (Json.Decode.succeed ())
+            )
+        , Browser.Events.onMouseDown
+            (Json.Decode.map2
+                (\x y ->
+                    MousePressedOnBackground
+                        { x = x / 1000
+                        , y = y / 1000
+                        }
+                )
+                (Json.Decode.field "clientX" Json.Decode.float)
+                (Json.Decode.field "clientY" Json.Decode.float)
             )
         , Time.every (1000 / 60)
             SimulationTickPassed
@@ -422,30 +562,6 @@ boneLooseness =
     Duration.seconds 0.13
 
 
-bodyUpdatePointPositions : Duration -> Body -> Body
-bodyUpdatePointPositions sincePreviousSimulation body =
-    { body
-        | points =
-            body.points
-                |> FastDict.map
-                    (\_ point ->
-                        case point.movement of
-                            BodyPointFixed ->
-                                point
-
-                            BodyPointFree pointMovementFree ->
-                                { point
-                                    | position =
-                                        point.position
-                                            |> Point2d.translateBy
-                                                (pointMovementFree.velocity
-                                                    |> Vector2d.for sincePreviousSimulation
-                                                )
-                                }
-                    )
-    }
-
-
 bodyVelocityAlter :
     (Vector2d (Quantity.Rate Length.Meters Duration.Seconds) Never
      -> Vector2d (Quantity.Rate Length.Meters Duration.Seconds) Never
@@ -495,18 +611,18 @@ view state =
              , Html.Attributes.style "width" "100vw"
              , Html.Attributes.style "margin" "0px"
              ]
-                ++ (case state.draggedBodyPointId of
+                ++ (case state.dragging of
                         Nothing ->
                             []
 
-                        Just draggedBodyPointId ->
+                        Just dragging ->
                             [ Html.Events.on "mousemove"
                                 (Json.Decode.map2
                                     (\x y ->
                                         MouseMoved
-                                            { x = x
-                                            , y = y
-                                            , draggedBodyPointId = draggedBodyPointId
+                                            { x = x / 1000
+                                            , y = y / 1000
+                                            , dragging = dragging
                                             }
                                     )
                                     (Json.Decode.field "clientX" Json.Decode.float)
@@ -534,39 +650,92 @@ view state =
                                         []
 
                                 _ ->
-                                    Html.text "invalid point index"
+                                    Svg.text "invalid body point index"
                         )
                     |> Svg.g []
                 , state.body.points
                     |> FastDict.toList
                     |> List.map
                         (\( pointIndex, point ) ->
-                            svgCircle
+                            svgBodyPoint
                                 { position = point.position |> Point2d.toMeters
-                                , radius = 0.02
                                 }
-                                ([ Svg.Events.on "mousedown"
-                                    (Json.Decode.map
-                                        (\() -> MousePressed { draggedBodyPointId = pointIndex })
-                                        (Json.Decode.succeed ())
-                                    )
-                                 ]
-                                    ++ (if state.draggedBodyPointId == Just pointIndex then
+                                (case state.dragging of
+                                    Just (DraggingBodyPoint draggingBodyPoint) ->
+                                        if pointIndex == draggingBodyPoint.id then
                                             [ svgFillUniform (Color.rgb 0 0.33 0.23)
                                             , svgStrokeWidth 0.005
                                             , svgStrokeUniform (Color.rgb 0.4 0.55 0.55)
                                             ]
 
                                         else
-                                            [ svgFillUniform (Color.rgb 0 0 0) ]
-                                       )
+                                            []
+
+                                    Just (DraggingFromNewPointPosition positions) ->
+                                        [ Svg.Events.stopPropagationOn "mouseup"
+                                            (Json.Decode.map
+                                                (\() ->
+                                                    ( MouseReleasedOnBodyPointAfterDraggingFromNewPointPosition
+                                                        { endBodyPointId = pointIndex
+                                                        , startPosition = positions.start
+                                                        , endPosition = positions.end
+                                                        }
+                                                    , True
+                                                    )
+                                                )
+                                                (Json.Decode.succeed ())
+                                            )
+                                        ]
+
+                                    Nothing ->
+                                        [ Svg.Events.stopPropagationOn "mousedown"
+                                            (Json.Decode.map
+                                                (\() ->
+                                                    ( MousePressedOnBodyPoint { id = pointIndex }
+                                                    , True
+                                                    )
+                                                )
+                                                (Json.Decode.succeed ())
+                                            )
+                                        ]
                                 )
                         )
                     |> Svg.g []
+                , case state.dragging of
+                    Nothing ->
+                        Svg.g [] []
+
+                    Just (DraggingBodyPoint _) ->
+                        Svg.g [] []
+
+                    Just (DraggingFromNewPointPosition positions) ->
+                        Svg.g
+                            [ svgOpacity 0.5
+                            , Svg.Attributes.pointerEvents "none"
+                            ]
+                            [ svgBone positions
+                                []
+                            , svgBodyPoint { position = positions.start } []
+                            , svgBodyPoint { position = positions.end } []
+                            ]
                 ]
             ]
         , Html.text (Debug.toString { width = state.windowWidth })
         ]
+
+
+svgBodyPoint :
+    { position : { x : Float, y : Float } }
+    -> List (Svg.Attribute event)
+    -> Svg event
+svgBodyPoint geometry additionalModifiers =
+    svgCircle
+        { position = geometry.position
+        , radius = 0.02
+        }
+        (svgFillUniform (Color.rgb 0 0 0)
+            :: additionalModifiers
+        )
 
 
 svgBone :
