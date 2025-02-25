@@ -14,7 +14,8 @@
             "elm/svg": "1.0.1",
             "elm/time": "1.0.0",
             "ianmackenzie/elm-geometry": "4.0.0",
-            "ianmackenzie/elm-units": "2.10.0"
+            "ianmackenzie/elm-units": "2.10.0",
+            "miniBill/elm-fast-dict": "1.2.1"
         },
         "indirect": {
             "elm/random": "1.0.0",

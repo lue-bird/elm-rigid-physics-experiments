@@ -9,6 +9,7 @@ import Browser
 import Color exposing (Color)
 import Direction2d exposing (Direction2d)
 import Duration exposing (Duration)
+import FastDict
 import Html exposing (Html)
 import Html.Attributes
 import Html.Events
@@ -43,12 +44,13 @@ type alias State =
 type alias Body =
     { bones :
         List
-            { startIndex : Int
-            , endIndex : Int
+            { startPointId : Int
+            , endPointId : Int
             , length : Length
             }
     , points :
-        Array
+        FastDict.Dict
+            Int
             { position : Point2d Length.Meters Never
             , movement : BodyPointMovement
             }
@@ -69,86 +71,92 @@ initialState =
     , draggedBodyPointIndex = Nothing
     , body =
         { bones =
-            [ { startIndex = 0
-              , endIndex = 1
+            [ { startPointId = 0
+              , endPointId = 1
               , length = Length.meters 0.2
               }
-            , { startIndex = 1
-              , endIndex = 2
+            , { startPointId = 1
+              , endPointId = 2
               , length = Length.meters 0.2
               }
-            , { startIndex = 0
-              , endIndex = 2
+            , { startPointId = 0
+              , endPointId = 2
               , length = Length.meters 0.2
               }
-            , { startIndex = 2
-              , endIndex = 3
+            , { startPointId = 2
+              , endPointId = 3
               , length = Length.meters 0.5
               }
-            , { startIndex = 0
-              , endIndex = 4
+            , { startPointId = 0
+              , endPointId = 4
               , length = Length.meters 0.5
               }
-            , { startIndex = 0
-              , endIndex = 5
+            , { startPointId = 0
+              , endPointId = 5
               , length = Length.meters 0.1
               }
-            , { startIndex = 5
-              , endIndex = 6
+            , { startPointId = 5
+              , endPointId = 6
               , length = Length.meters 0.1
               }
             ]
         , points =
-            Array.fromList
-                [ { position = Point2d.fromMeters { x = 0.2, y = 0.2 }
-                  , movement =
+            FastDict.empty
+                |> FastDict.insert 0
+                    { position = Point2d.fromMeters { x = 0.2, y = 0.2 }
+                    , movement =
                         BodyPointFree
                             { velocity =
                                 Vector2d.meters 0.5 0
                                     |> Vector2d.per Duration.second
                             }
-                  }
-                , { position = Point2d.fromMeters { x = 0.4, y = 0.4 }
-                  , movement =
+                    }
+                |> FastDict.insert 1
+                    { position = Point2d.fromMeters { x = 0.4, y = 0.4 }
+                    , movement =
                         BodyPointFree
                             { velocity =
                                 Vector2d.meters 0.5 0
                                     |> Vector2d.per Duration.second
                             }
-                  }
-                , { position = Point2d.fromMeters { x = 0.6, y = 0.4 }
-                  , movement =
+                    }
+                |> FastDict.insert 2
+                    { position = Point2d.fromMeters { x = 0.6, y = 0.4 }
+                    , movement =
                         BodyPointFree
                             { velocity =
                                 Vector2d.meters 0.2 0
                                     |> Vector2d.per Duration.second
                             }
-                  }
-                , { position = Point2d.fromMeters { x = 0.65, y = 0.6 }
-                  , movement =
+                    }
+                |> FastDict.insert 3
+                    { position = Point2d.fromMeters { x = 0.65, y = 0.6 }
+                    , movement =
                         BodyPointFixed
-                  }
-                , { position = Point2d.fromMeters { x = 0.15, y = 0.6 }
-                  , movement =
+                    }
+                |> FastDict.insert 4
+                    { position = Point2d.fromMeters { x = 0.15, y = 0.6 }
+                    , movement =
                         BodyPointFixed
-                  }
-                , { position = Point2d.fromMeters { x = 0.15, y = 0.1 }
-                  , movement =
+                    }
+                |> FastDict.insert 5
+                    { position = Point2d.fromMeters { x = 0.15, y = 0.1 }
+                    , movement =
                         BodyPointFree
                             { velocity =
                                 Vector2d.meters 0 0
                                     |> Vector2d.per Duration.second
                             }
-                  }
-                , { position = Point2d.fromMeters { x = 0.075, y = 0.15 }
-                  , movement =
+                    }
+                |> FastDict.insert 6
+                    { position = Point2d.fromMeters { x = 0.075, y = 0.15 }
+                    , movement =
                         BodyPointFree
                             { velocity =
                                 Vector2d.meters 0 0
                                     |> Vector2d.per Duration.second
                             }
-                  }
-                ]
+                    }
         }
     }
 
@@ -203,8 +211,8 @@ bodyApplyForcesFromBones body =
                 |> List.foldl
                     (\bone bodyPointsSoFar ->
                         case
-                            ( bodyPointsSoFar |> Array.get bone.startIndex
-                            , bodyPointsSoFar |> Array.get bone.endIndex
+                            ( bodyPointsSoFar |> FastDict.get bone.startPointId
+                            , bodyPointsSoFar |> FastDict.get bone.endPointId
                             )
                         of
                             ( Just startPoint, Just endPoint ) ->
@@ -235,7 +243,7 @@ bodyApplyForcesFromBones body =
 
                                     ( BodyPointFree startMovementFree, BodyPointFixed ) ->
                                         bodyPointsSoFar
-                                            |> Array.set bone.startIndex
+                                            |> FastDict.insert bone.startPointId
                                                 { startPoint
                                                     | movement =
                                                         BodyPointFree
@@ -252,7 +260,7 @@ bodyApplyForcesFromBones body =
 
                                     ( BodyPointFixed, BodyPointFree endMovementFree ) ->
                                         bodyPointsSoFar
-                                            |> Array.set bone.endIndex
+                                            |> FastDict.insert bone.endPointId
                                                 { endPoint
                                                     | movement =
                                                         BodyPointFree
@@ -271,7 +279,7 @@ bodyApplyForcesFromBones body =
 
                                     ( BodyPointFree startMovementFree, BodyPointFree endMovementFree ) ->
                                         bodyPointsSoFar
-                                            |> Array.set bone.startIndex
+                                            |> FastDict.insert bone.startPointId
                                                 { startPoint
                                                     | movement =
                                                         BodyPointFree
@@ -285,7 +293,7 @@ bodyApplyForcesFromBones body =
                                                                         )
                                                             }
                                                 }
-                                            |> Array.set bone.endIndex
+                                            |> FastDict.insert bone.endPointId
                                                 { endPoint
                                                     | movement =
                                                         BodyPointFree
@@ -331,8 +339,8 @@ bodyUpdatePointPositions sincePreviousSimulation body =
     { body
         | points =
             body.points
-                |> Array.map
-                    (\point ->
+                |> FastDict.map
+                    (\_ point ->
                         case point.movement of
                             BodyPointFixed ->
                                 point
@@ -359,8 +367,8 @@ bodyVelocityAlter :
 bodyVelocityAlter velocityChange body =
     { points =
         body.points
-            |> Array.map
-                (\point ->
+            |> FastDict.map
+                (\_ point ->
                     case point.movement of
                         BodyPointFixed ->
                             point
@@ -400,8 +408,8 @@ view state =
                 |> List.map
                     (\bone ->
                         case
-                            ( state.body.points |> Array.get bone.startIndex
-                            , state.body.points |> Array.get bone.endIndex
+                            ( state.body.points |> FastDict.get bone.startPointId
+                            , state.body.points |> FastDict.get bone.endPointId
                             )
                         of
                             ( Just startPoint, Just endPoint ) ->
@@ -416,9 +424,9 @@ view state =
                     )
                 |> Svg.g []
             , state.body.points
-                |> Array.toList
-                |> List.indexedMap
-                    (\pointIndex point ->
+                |> FastDict.toList
+                |> List.map
+                    (\( pointIndex, point ) ->
                         svgCircle
                             { position = point.position |> Point2d.toMeters
                             , radius = 0.02
