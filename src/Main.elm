@@ -6,6 +6,8 @@ module Main exposing (main)
 import Angle
 import Array exposing (Array)
 import Browser
+import Browser.Dom
+import Browser.Events
 import Color exposing (Color)
 import Direction2d exposing (Direction2d)
 import Duration exposing (Duration)
@@ -13,6 +15,7 @@ import FastDict
 import Html exposing (Html)
 import Html.Attributes
 import Html.Events
+import Json.Decode
 import Json.Encode
 import Length exposing (Length)
 import Point2d exposing (Point2d)
@@ -20,24 +23,38 @@ import Quantity exposing (Quantity)
 import Svg exposing (Svg)
 import Svg.Attributes
 import Svg.Events
+import Task
 import Time
 import Vector2d exposing (Vector2d)
 
 
-main : Platform.Program () State State
+main : Platform.Program () State Event
 main =
     Browser.element
-        { init = \() -> ( initialState, Cmd.none )
+        { init =
+            \() ->
+                ( initialState
+                , Browser.Dom.getViewport
+                    |> Task.perform
+                        (\viewport ->
+                            WindowSized
+                                { width = viewport.viewport.width
+                                , height = viewport.viewport.height
+                                }
+                        )
+                )
         , view = view
-        , update = \newState _ -> ( newState, Cmd.none )
+        , update = \event state -> ( updateStateBasedOnEvent event state, Cmd.none )
         , subscriptions = subscribe
         }
 
 
 type alias State =
-    { lastSimulationTime : Maybe Time.Posix
+    { windowWidth : Float
+    , windowHeight : Float
+    , lastSimulationTime : Maybe Time.Posix
     , body : Body
-    , draggedBodyPointIndex : Maybe Int
+    , draggedBodyPointId : Maybe Int
     }
 
 
@@ -67,8 +84,10 @@ type BodyPointMovement
 
 initialState : State
 initialState =
-    { lastSimulationTime = Nothing
-    , draggedBodyPointIndex = Nothing
+    { windowHeight = 1000
+    , windowWidth = 2000
+    , lastSimulationTime = Nothing
+    , draggedBodyPointId = Nothing
     , body =
         { bones =
             [ { startPointId = 0
@@ -161,10 +180,56 @@ initialState =
     }
 
 
-subscribe : State -> Sub State
-subscribe state =
-    Time.every (1000 / 60)
-        (\currentTime ->
+type Event
+    = WindowSized { width : Float, height : Float }
+    | MouseReleased
+    | SimulationTickPassed Time.Posix
+    | MouseMoved
+        { x : Float
+        , y : Float
+        , draggedBodyPointId : Int
+        }
+    | MousePressed { draggedBodyPointId : Int }
+
+
+updateStateBasedOnEvent : Event -> State -> State
+updateStateBasedOnEvent event state =
+    case event of
+        WindowSized newWindowSize ->
+            { state
+                | windowWidth = newWindowSize.width
+                , windowHeight = newWindowSize.height
+            }
+
+        MouseReleased ->
+            { state | draggedBodyPointId = Nothing }
+
+        MouseMoved moved ->
+            { state
+                | body =
+                    state.body
+                        |> (\body ->
+                                { body
+                                    | points =
+                                        body.points
+                                            |> FastDict.update
+                                                moved.draggedBodyPointId
+                                                (Maybe.map
+                                                    (\draggedPoint ->
+                                                        { draggedPoint
+                                                            | position =
+                                                                Point2d.fromMeters
+                                                                    { x = moved.x / 1000
+                                                                    , y = moved.y / 1000
+                                                                    }
+                                                        }
+                                                    )
+                                                )
+                                }
+                           )
+            }
+
+        SimulationTickPassed currentTime ->
             let
                 sincePreviousSimulation : Duration
                 sincePreviousSimulation =
@@ -200,7 +265,30 @@ subscribe state =
                             )
                         |> bodyUpdatePointPositions sincePreviousSimulation
             }
-        )
+
+        MousePressed pressed ->
+            { state
+                | draggedBodyPointId = Just pressed.draggedBodyPointId
+            }
+
+
+subscribe : State -> Sub Event
+subscribe state =
+    Sub.batch
+        [ Browser.Events.onResize
+            (\width height ->
+                WindowSized
+                    { width = width |> Basics.toFloat
+                    , height = height |> Basics.toFloat
+                    }
+            )
+        , Browser.Events.onMouseUp
+            (Json.Decode.map (\() -> MouseReleased)
+                (Json.Decode.succeed ())
+            )
+        , Time.every (1000 / 60)
+            SimulationTickPassed
+        ]
 
 
 bodyApplyForcesFromBones : Body -> Body
@@ -386,7 +474,7 @@ bodyVelocityAlter velocityChange body =
     }
 
 
-view : State -> Html State
+view : State -> Html Event
 view state =
     Html.div
         [ Html.Attributes.style "height" "100vh"
@@ -394,59 +482,90 @@ view state =
         , Html.Attributes.style "background" "black"
         , Html.Attributes.style "color" "white"
         , Html.Attributes.style "margin" "0px"
-        , Html.Events.onMouseUp
-            { state | draggedBodyPointIndex = Nothing }
         ]
         [ Svg.svg
-            [ Svg.Attributes.viewBox "0 0 1.6 0.9"
-            , Html.Attributes.style "background" "red"
-            , Html.Attributes.style "height" "100vh"
-            , Html.Attributes.style "width" "100vw"
-            , Html.Attributes.style "margin" "0px"
-            ]
-            [ state.body.bones
-                |> List.map
-                    (\bone ->
-                        case
-                            ( state.body.points |> FastDict.get bone.startPointId
-                            , state.body.points |> FastDict.get bone.endPointId
-                            )
-                        of
-                            ( Just startPoint, Just endPoint ) ->
-                                svgBone
-                                    { start = startPoint.position |> Point2d.toMeters
-                                    , end = endPoint.position |> Point2d.toMeters
-                                    }
-                                    []
+            ([ Svg.Attributes.viewBox
+                ("0 0 "
+                    ++ (state.windowWidth |> String.fromFloat)
+                    ++ " "
+                    ++ (state.windowHeight |> String.fromFloat)
+                )
+             , Html.Attributes.style "background" "red"
+             , Html.Attributes.style "height" "100vh"
+             , Html.Attributes.style "width" "100vw"
+             , Html.Attributes.style "margin" "0px"
+             ]
+                ++ (case state.draggedBodyPointId of
+                        Nothing ->
+                            []
 
-                            _ ->
-                                Html.text "invalid point index"
-                    )
-                |> Svg.g []
-            , state.body.points
-                |> FastDict.toList
-                |> List.map
-                    (\( pointIndex, point ) ->
-                        svgCircle
-                            { position = point.position |> Point2d.toMeters
-                            , radius = 0.02
-                            }
-                            ([ Svg.Events.onMouseDown
-                                { state | draggedBodyPointIndex = Just pointIndex }
-                             ]
-                                ++ (if state.draggedBodyPointIndex == Just pointIndex then
-                                        [ svgFillUniform (Color.rgb 0 0.33 0.23)
-                                        , svgStrokeWidth 0.005
-                                        , svgStrokeUniform (Color.rgb 0.4 0.55 0.55)
-                                        ]
+                        Just draggedBodyPointId ->
+                            [ Html.Events.on "mousemove"
+                                (Json.Decode.map2
+                                    (\x y ->
+                                        MouseMoved
+                                            { x = x
+                                            , y = y
+                                            , draggedBodyPointId = draggedBodyPointId
+                                            }
+                                    )
+                                    (Json.Decode.field "clientX" Json.Decode.float)
+                                    (Json.Decode.field "clientY" Json.Decode.float)
+                                )
+                            ]
+                   )
+            )
+            [ Svg.g
+                [ svgScaled 1000
+                ]
+                [ state.body.bones
+                    |> List.map
+                        (\bone ->
+                            case
+                                ( state.body.points |> FastDict.get bone.startPointId
+                                , state.body.points |> FastDict.get bone.endPointId
+                                )
+                            of
+                                ( Just startPoint, Just endPoint ) ->
+                                    svgBone
+                                        { start = startPoint.position |> Point2d.toMeters
+                                        , end = endPoint.position |> Point2d.toMeters
+                                        }
+                                        []
 
-                                    else
-                                        [ svgFillUniform (Color.rgb 0 0 0) ]
-                                   )
-                            )
-                    )
-                |> Svg.g []
+                                _ ->
+                                    Html.text "invalid point index"
+                        )
+                    |> Svg.g []
+                , state.body.points
+                    |> FastDict.toList
+                    |> List.map
+                        (\( pointIndex, point ) ->
+                            svgCircle
+                                { position = point.position |> Point2d.toMeters
+                                , radius = 0.02
+                                }
+                                ([ Svg.Events.on "mousedown"
+                                    (Json.Decode.map
+                                        (\() -> MousePressed { draggedBodyPointId = pointIndex })
+                                        (Json.Decode.succeed ())
+                                    )
+                                 ]
+                                    ++ (if state.draggedBodyPointId == Just pointIndex then
+                                            [ svgFillUniform (Color.rgb 0 0.33 0.23)
+                                            , svgStrokeWidth 0.005
+                                            , svgStrokeUniform (Color.rgb 0.4 0.55 0.55)
+                                            ]
+
+                                        else
+                                            [ svgFillUniform (Color.rgb 0 0 0) ]
+                                       )
+                                )
+                        )
+                    |> Svg.g []
+                ]
             ]
+        , Html.text (Debug.toString { width = state.windowWidth })
         ]
 
 
@@ -573,6 +692,17 @@ svgOffsetBy offset svg =
 svgOpacity : Float -> Svg.Attribute event_
 svgOpacity percentage =
     Svg.Attributes.opacity (percentage |> String.fromFloat)
+
+
+svgScaled : Float -> Svg.Attribute event_
+svgScaled scale =
+    Svg.Attributes.transform
+        ([ "scale("
+         , scale |> String.fromFloat
+         , ")"
+         ]
+            |> String.concat
+        )
 
 
 svgRotated :
