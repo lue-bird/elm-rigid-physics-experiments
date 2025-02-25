@@ -6,7 +6,7 @@ Just run `elm reactor`.
 - press anywhere on the background and drag to an existing point to create a new bone
 - right button drag from an existing point to another to add a bone between them
   or drag to anywhere on the background to create a new bone to the new point
-- TODO: toggle points between fixed and free movement
+- double click a point to toggle between fixed and free movement
 - TODO: delete a bone
 - TODO: delete a point
 - TODO: shrink/grow a bone

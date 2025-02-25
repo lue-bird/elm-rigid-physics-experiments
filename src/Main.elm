@@ -201,6 +201,7 @@ type Event
         { id : Int
         , position : { x : Float, y : Float }
         }
+    | MouseDoubleClickedOnBodyPoint { id : Int }
     | MouseMoved
         { x : Float
         , y : Float
@@ -253,6 +254,36 @@ updateStateBasedOnEvent event state =
                             , end = pressed.position
                             }
                         )
+            }
+
+        MouseDoubleClickedOnBodyPoint doubleClickedBodyPoint ->
+            { state
+                | body =
+                    state.body
+                        |> (\body ->
+                                { body
+                                    | points =
+                                        body.points
+                                            |> FastDict.update doubleClickedBodyPoint.id
+                                                (Maybe.map
+                                                    (\point ->
+                                                        { point
+                                                            | movement =
+                                                                case point.movement of
+                                                                    BodyPointFree _ ->
+                                                                        BodyPointFixed
+
+                                                                    BodyPointFixed ->
+                                                                        BodyPointFree
+                                                                            { velocity =
+                                                                                Vector2d.meters 0 0
+                                                                                    |> Vector2d.per Duration.second
+                                                                            }
+                                                        }
+                                                    )
+                                                )
+                                }
+                           )
             }
 
         MouseReleasedOnBackground releaseMousePosition ->
@@ -809,81 +840,91 @@ view state =
                             svgBodyPoint
                                 { position = point.position |> Point2d.toMeters
                                 }
-                                (case state.dragging of
-                                    Just (DraggingBodyPoint draggingBodyPoint) ->
-                                        if pointId == draggingBodyPoint.id then
-                                            [ svgFillUniform (Color.rgb 0 0.33 0.23)
-                                            , svgStrokeWidth 0.005
-                                            , svgStrokeUniform (Color.rgb 0.4 0.55 0.55)
-                                            ]
-
-                                        else
-                                            []
-
-                                    Just (DraggingFromBodyPoint draggingFromBodyPoint) ->
-                                        [ Svg.Events.stopPropagationOn "mouseup"
-                                            (Json.Decode.map
-                                                (\() ->
-                                                    ( MouseReleasedOnBodyPointAfterDraggingFromBodyPoint
-                                                        { startBodyPointId = draggingFromBodyPoint.startBodyPointId
-                                                        , endBodyPointId = pointId
-                                                        }
-                                                    , True
-                                                    )
-                                                )
-                                                (Json.Decode.succeed ())
+                                ([ Svg.Events.stopPropagationOn "dblclick"
+                                    (Json.Decode.map
+                                        (\() ->
+                                            ( MouseDoubleClickedOnBodyPoint { id = pointId }
+                                            , True
                                             )
-                                        ]
+                                        )
+                                        (Json.Decode.succeed ())
+                                    )
+                                 ]
+                                    ++ (case state.dragging of
+                                            Just (DraggingBodyPoint draggingBodyPoint) ->
+                                                if pointId == draggingBodyPoint.id then
+                                                    [ svgFillUniform (Color.rgb 0 0.33 0.23)
+                                                    , svgStrokeWidth 0.005
+                                                    , svgStrokeUniform (Color.rgb 0.4 0.55 0.55)
+                                                    ]
 
-                                    Just (DraggingFromNewPointPosition positions) ->
-                                        [ Svg.Events.stopPropagationOn "mouseup"
-                                            (Json.Decode.map
-                                                (\() ->
-                                                    ( MouseReleasedOnBodyPointAfterDraggingFromNewPointPosition
-                                                        { endBodyPointId = pointId
-                                                        , startPosition = positions.start
-                                                        , endPosition = positions.end
-                                                        }
-                                                    , True
-                                                    )
-                                                )
-                                                (Json.Decode.succeed ())
-                                            )
-                                        ]
+                                                else
+                                                    []
 
-                                    Nothing ->
-                                        [ Svg.Events.custom "mousedown"
-                                            (Json.Decode.andThen
-                                                (\button ->
-                                                    case button of
-                                                        0 ->
-                                                            Json.Decode.succeed
-                                                                { message = MousePressedPrimaryOnBodyPoint { id = pointId }
-                                                                , stopPropagation = True
-                                                                , preventDefault = False
+                                            Just (DraggingFromBodyPoint draggingFromBodyPoint) ->
+                                                [ Svg.Events.stopPropagationOn "mouseup"
+                                                    (Json.Decode.map
+                                                        (\() ->
+                                                            ( MouseReleasedOnBodyPointAfterDraggingFromBodyPoint
+                                                                { startBodyPointId = draggingFromBodyPoint.startBodyPointId
+                                                                , endBodyPointId = pointId
                                                                 }
+                                                            , True
+                                                            )
+                                                        )
+                                                        (Json.Decode.succeed ())
+                                                    )
+                                                ]
 
-                                                        _ ->
-                                                            Json.Decode.fail "this mouse button is not handled by onmousedown"
-                                                )
-                                                (Json.Decode.field "button" Json.Decode.int)
-                                            )
-                                        , Svg.Events.custom "contextmenu"
-                                            (Json.Decode.map2
-                                                (\x y ->
-                                                    { message =
-                                                        MousePressedSecondaryOnBodyPoint
-                                                            { id = pointId
-                                                            , position = { x = x / 1000, y = y / 1000 }
+                                            Just (DraggingFromNewPointPosition positions) ->
+                                                [ Svg.Events.stopPropagationOn "mouseup"
+                                                    (Json.Decode.map
+                                                        (\() ->
+                                                            ( MouseReleasedOnBodyPointAfterDraggingFromNewPointPosition
+                                                                { endBodyPointId = pointId
+                                                                , startPosition = positions.start
+                                                                , endPosition = positions.end
+                                                                }
+                                                            , True
+                                                            )
+                                                        )
+                                                        (Json.Decode.succeed ())
+                                                    )
+                                                ]
+
+                                            Nothing ->
+                                                [ Svg.Events.stopPropagationOn "mousedown"
+                                                    (Json.Decode.andThen
+                                                        (\button ->
+                                                            case button of
+                                                                0 ->
+                                                                    Json.Decode.succeed
+                                                                        ( MousePressedPrimaryOnBodyPoint { id = pointId }
+                                                                        , True
+                                                                        )
+
+                                                                _ ->
+                                                                    Json.Decode.fail "this mouse button is not handled by onmousedown"
+                                                        )
+                                                        (Json.Decode.field "button" Json.Decode.int)
+                                                    )
+                                                , Svg.Events.custom "contextmenu"
+                                                    (Json.Decode.map2
+                                                        (\x y ->
+                                                            { message =
+                                                                MousePressedSecondaryOnBodyPoint
+                                                                    { id = pointId
+                                                                    , position = { x = x / 1000, y = y / 1000 }
+                                                                    }
+                                                            , stopPropagation = True
+                                                            , preventDefault = True
                                                             }
-                                                    , stopPropagation = True
-                                                    , preventDefault = True
-                                                    }
-                                                )
-                                                (Json.Decode.field "clientX" Json.Decode.float)
-                                                (Json.Decode.field "clientY" Json.Decode.float)
-                                            )
-                                        ]
+                                                        )
+                                                        (Json.Decode.field "clientX" Json.Decode.float)
+                                                        (Json.Decode.field "clientY" Json.Decode.float)
+                                                    )
+                                                ]
+                                       )
                                 )
                         )
                     |> Svg.g []
