@@ -321,10 +321,52 @@ updateStateBasedOnEvent event state =
                         | dragging = Nothing
                     }
 
-                Just (DraggingFromNewPointPosition _) ->
+                Just (DraggingFromNewPointPosition positions) ->
                     -- add a new body here in the future
+                    let
+                        newStartPointId : Int
+                        newStartPointId =
+                            state.body.points |> fastDictHigherThanMaximumIntKey
+
+                        newEndPointId : Int
+                        newEndPointId =
+                            newStartPointId + 1
+                    in
                     { state
                         | dragging = Nothing
+                        , body =
+                            state.body
+                                |> (\body ->
+                                        { body
+                                            | points =
+                                                body.points
+                                                    |> FastDict.insert
+                                                        newStartPointId
+                                                        { position = Point2d.fromMeters positions.start
+                                                        , movement = BodyPointFixed
+                                                        }
+                                                    |> FastDict.insert
+                                                        newEndPointId
+                                                        { position = Point2d.fromMeters releaseMousePosition
+                                                        , movement =
+                                                            BodyPointFree
+                                                                { velocity =
+                                                                    Vector2d.meters 0 0
+                                                                        |> Vector2d.per Duration.second
+                                                                }
+                                                        }
+                                            , bones =
+                                                { startPointId = newStartPointId
+                                                , endPointId = newEndPointId
+                                                , length =
+                                                    Vector2d.from
+                                                        (Point2d.fromMeters positions.start)
+                                                        (Point2d.fromMeters releaseMousePosition)
+                                                        |> Vector2d.length
+                                                }
+                                                    :: body.bones
+                                        }
+                                   )
                     }
 
                 Just (DraggingFromBodyPoint draggingFromBodyPoint) ->
@@ -341,7 +383,7 @@ updateStateBasedOnEvent event state =
                             let
                                 newPointId : Int
                                 newPointId =
-                                    state.body.points |> fastDictFindUnusedIntKey
+                                    state.body.points |> fastDictHigherThanMaximumIntKey
                             in
                             { state
                                 | dragging = Nothing
@@ -389,7 +431,7 @@ updateStateBasedOnEvent event state =
                     let
                         newPointId : Int
                         newPointId =
-                            state.body.points |> fastDictFindUnusedIntKey
+                            state.body.points |> fastDictHigherThanMaximumIntKey
                     in
                     { state
                         | dragging = Nothing
@@ -589,8 +631,8 @@ updateStateBasedOnEvent event state =
             }
 
 
-fastDictFindUnusedIntKey : FastDict.Dict Int value_ -> Int
-fastDictFindUnusedIntKey fastDict =
+fastDictHigherThanMaximumIntKey : FastDict.Dict Int value_ -> Int
+fastDictHigherThanMaximumIntKey fastDict =
     case fastDict |> FastDict.getMaxKey of
         Nothing ->
             0
